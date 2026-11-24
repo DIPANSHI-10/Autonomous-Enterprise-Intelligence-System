@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-main: #050914;
+  --color-bg-secondary: #091326;
+  --color-bg-card: #0c1729;
+  --color-border-subtle: #1b2b43;
+  --color-accent-cyan: #36d9f5;
+  --color-accent-blue: #5587ff;
+  --color-accent-violet: #a66cff;
+  --color-accent-orange: #ff9a42;
+  --color-accent-green: #42d6a4;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: #050914;
+    color: #e2e8f0;
+    font-family: var(--font-sans);
+  }
+}
+
+.glass-panel {
+  background: linear-gradient(145deg, rgba(12, 23, 41, 0.86), rgba(9, 19, 38, 0.72));
+  backdrop-filter: blur(16px);
+  border: 1px solid #1b2b43;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.glass-panel-hover:hover {
+  border-color: rgba(54, 217, 245, 0.45);
+  box-shadow: 0 10px 36px rgba(54, 217, 245, 0.12), inset 0 1px 0 rgba(54, 217, 245, 0.08);
+}
+
+.neural-grid-bg {
+  background-image:
+    radial-gradient(circle at 50% 35%, rgba(54, 217, 245, 0.08) 0%, transparent 55%),
+    linear-gradient(to right, rgba(27, 43, 67, 0.18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(27, 43, 67, 0.18) 1px, transparent 1px);
+  background-size: 100% 100%, 40px 40px, 40px 40px;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #050914;
+}
+::-webkit-scrollbar-thumb {
+  background: #1b2b43;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #36d9f5;
+}

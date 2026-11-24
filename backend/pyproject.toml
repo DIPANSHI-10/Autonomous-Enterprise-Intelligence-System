@@ -1,0 +1,10 @@
+[project]
+name = "autonomous-enterprise-intelligence-system"
+version = "1.0.0"
+description = "Multi-Agent AI Powered Enterprise Intelligence Platform"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "module"
+testpaths = ["tests"]
