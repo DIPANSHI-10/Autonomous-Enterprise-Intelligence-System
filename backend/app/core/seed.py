@@ -3,7 +3,8 @@
 from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal
-from app.models.domain import AgentDefinition, Integration, Project
+from app.core.security import hash_password
+from app.models.domain import AgentDefinition, Integration, Project, User
 
 DEFAULT_AGENTS = [
     {
@@ -112,6 +113,20 @@ async def seed_defaults() -> None:
                     name="Enterprise AI Market Intelligence",
                     description="Default workspace for autonomous multi-agent competitive and market intelligence.",
                     status="active",
+                )
+            )
+
+        admin_user = (
+            await db.execute(select(User).where(User.email == "admin@enterprise-ai.local"))
+        ).scalar_one_or_none()
+        if not admin_user:
+            db.add(
+                User(
+                    email="admin@enterprise-ai.local",
+                    full_name="Enterprise Administrator",
+                    hashed_password=hash_password("EnterpriseAI#2026"),
+                    role="admin",
+                    is_active=True,
                 )
             )
 

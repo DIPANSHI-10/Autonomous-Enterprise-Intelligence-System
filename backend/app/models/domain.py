@@ -32,7 +32,8 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(120))
-    role: Mapped[str] = mapped_column(String(40), default="enterprise_analyst")
+    hashed_password: Mapped[str] = mapped_column(String(255), default="")
+    role: Mapped[str] = mapped_column(String(40), default="analyst")  # admin | analyst | viewer
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     preferences: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -160,6 +161,11 @@ class Document(Base):
     file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_model: Mapped[str] = mapped_column(String(120), default="sentence-transformers/all-MiniLM-L6-v2")
+    chunk_size: Mapped[int] = mapped_column(Integer, default=750)
+    chunk_overlap: Mapped[int] = mapped_column(Integer, default=120)
+    content_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    raw_text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="indexed")
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -174,6 +180,8 @@ class DocumentChunk(Base):
     document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     chunk_index: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    embedding_model: Mapped[str] = mapped_column(String(120), default="sentence-transformers/all-MiniLM-L6-v2")
     embedding: Mapped[list] = mapped_column(JSON, default=list)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -186,12 +194,15 @@ class MemoryRecord(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     task_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     layer: Mapped[str] = mapped_column(String(30), index=True)  # short_term | long_term | episodic
     category: Mapped[str] = mapped_column(String(80), default="general")
     content: Mapped[str] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String(160), default="system")
     relevance_score: Mapped[float] = mapped_column(Float, default=1.0)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
@@ -248,6 +259,28 @@ class AuditLog(Base):
     resource_id: Mapped[str] = mapped_column(String(80))
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class A2ATask(Base):
+    __tablename__ = "a2a_tasks"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    protocol: Mapped[str] = mapped_column(String(30), default="a2a/v1")
+    sender_agent: Mapped[str] = mapped_column(String(100))
+    target_agent: Mapped[str] = mapped_column(String(100), index=True)
+    objective: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(30), default="completed", index=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 Index("ix_events_task_created", WorkflowEvent.task_id, WorkflowEvent.created_at)

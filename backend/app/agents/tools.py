@@ -1,7 +1,7 @@
 """Specialized agent tools: web search, URL fetch, Pydantic extraction, Python analysis."""
 
 import re
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import quote_plus
 import httpx
 import numpy as np
@@ -13,13 +13,27 @@ from app.core.security import sanitize_untrusted_text
 
 class ExtractedEntity(BaseModel):
     name: str
-    category: str = "AI Enterprise"
+    category: str = "Enterprise Subject"
     products: list[str] = Field(default_factory=list)
-    pricing_model: str = "Enterprise / Tiered"
+    pricing_model: str = "Not specified in retrieved excerpt"
     technologies: list[str] = Field(default_factory=list)
     market_positioning: str = ""
-    sentiment_score: float = Field(default=0.75, ge=0.0, le=1.0)
+    sentiment_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     source_url: str = ""
+
+
+class ExtractedEntityList(BaseModel):
+    entities: list[ExtractedEntity] = Field(default_factory=list)
+
+
+class StrategicRecommendation(BaseModel):
+    title: str
+    priority: str = "Medium"
+    rationale: str
+
+
+class StrategyRecommendationList(BaseModel):
+    recommendations: list[StrategicRecommendation] = Field(default_factory=list)
 
 
 async def perform_web_search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
@@ -114,7 +128,8 @@ def run_quantitative_analysis(entities: list[dict[str, Any]]) -> dict[str, Any]:
             "chart_datasets": [],
         }
 
-    sentiments = np.array([float(e.get("sentiment_score", 0.7)) for e in entities], dtype=float)
+    scored_vals = [float(e["sentiment_score"]) for e in entities if e.get("sentiment_score") is not None]
+    sentiments = np.array(scored_vals, dtype=float) if scored_vals else np.array([], dtype=float)
     tech_counts: dict[str, int] = {}
     for e in entities:
         for tech in e.get("technologies", []):
@@ -124,7 +139,9 @@ def run_quantitative_analysis(entities: list[dict[str, Any]]) -> dict[str, Any]:
     chart_data = [
         {
             "name": e.get("name", f"Entity {i+1}")[:24],
-            "sentiment": round(float(e.get("sentiment_score", 0.7)) * 100, 1),
+            "sentiment": round(float(e["sentiment_score"]) * 100, 1)
+            if e.get("sentiment_score") is not None
+            else 0.0,
             "product_count": len(e.get("products", [])),
             "tech_count": len(e.get("technologies", [])),
         }
@@ -133,11 +150,11 @@ def run_quantitative_analysis(entities: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "entity_count": len(entities),
-        "avg_sentiment": round(float(np.mean(sentiments)), 4),
-        "median_sentiment": round(float(np.median(sentiments)), 4),
-        "sentiment_std": round(float(np.std(sentiments)), 4),
-        "min_sentiment": round(float(np.min(sentiments)), 4),
-        "max_sentiment": round(float(np.max(sentiments)), 4),
+        "avg_sentiment": round(float(np.mean(sentiments)), 4) if sentiments.size else 0.0,
+        "median_sentiment": round(float(np.median(sentiments)), 4) if sentiments.size else 0.0,
+        "sentiment_std": round(float(np.std(sentiments)), 4) if sentiments.size else 0.0,
+        "min_sentiment": round(float(np.min(sentiments)), 4) if sentiments.size else 0.0,
+        "max_sentiment": round(float(np.max(sentiments)), 4) if sentiments.size else 0.0,
         "top_technologies": [{"technology": k, "count": v} for k, v in sorted_tech[:8]],
         "chart_datasets": chart_data,
     }

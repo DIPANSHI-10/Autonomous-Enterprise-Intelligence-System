@@ -14,7 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.graph import resume_after_approval, run_task_workflow
 from app.core.config import get_settings
 from app.core.database import get_db, init_db
-from app.core.security import enforce_rate_limit, sanitize_filename, sanitize_untrusted_text, verify_a2a_token
+from app.core.security import (
+    create_access_token,
+    enforce_rate_limit,
+    get_current_user_claims,
+    hash_password,
+    require_roles,
+    sanitize_filename,
+    sanitize_untrusted_text,
+    verify_a2a_token,
+    verify_password,
+)
 from app.core.seed import seed_defaults
 from app.models.domain import (
     AgentDefinition,
@@ -25,7 +35,9 @@ from app.models.domain import (
     Integration,
     Project,
     Report,
+    SystemSetting,
     Task,
+    User,
     WorkflowEvent,
 )
 from app.schemas.api import (
@@ -38,9 +50,12 @@ from app.schemas.api import (
     ProjectCreate,
     ProjectOut,
     ProjectUpdate,
+    RAGQuestionRequest,
     SettingsUpdate,
     TaskCreate,
     TaskOut,
+    UserLogin,
+    UserRegister,
 )
 from app.services.a2a_service import a2a_service
 from app.services.analytics_service import get_dashboard_metrics
@@ -48,7 +63,7 @@ from app.services.event_bus import event_bus
 from app.services.llm_provider import llm_service
 from app.services.mcp_service import mcp_registry
 from app.services.memory_service import clear_task_memory, delete_memory, search_memories, store_memory
-from app.services.rag_service import hybrid_search, ingest_document
+from app.services.rag_service import answer_with_rag, hybrid_search, ingest_document, rebuild_stale_embeddings
 
 settings = get_settings()
 
@@ -82,8 +97,51 @@ async def health_check():
         "status": "healthy",
         "application": settings.APP_NAME,
         "environment": settings.ENVIRONMENT,
+        "llm_configured": llm_service.has_configured_provider(),
+        "embedding_model": settings.EMBEDDING_MODEL,
+        "auth_required": settings.AUTH_REQUIRED,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ---------------- AUTHENTICATION & RBAC ----------------
+@app.post("/api/auth/register")
+async def register_user(payload: UserRegister, db: AsyncSession = Depends(get_db)):
+    existing = (
+        await db.execute(select(User).where(User.email == payload.email.lower().strip()))
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(
+        email=payload.email.lower().strip(),
+        full_name=payload.full_name.strip(),
+        hashed_password=hash_password(payload.password),
+        role="analyst",
+        is_active=True,
+    )
+    db.add(user)
+    db.add(AuditLog(actor=user.email, action="user_register", resource_type="user", resource_id=user.email))
+    await db.commit()
+    token = create_access_token(subject=user.email, role=user.role)
+    return {"access_token": token, "token_type": "bearer", "user": {"email": user.email, "full_name": user.full_name, "role": user.role}}
+
+
+@app.post("/api/auth/login")
+async def login_user(payload: UserLogin, db: AsyncSession = Depends(get_db)):
+    user = (
+        await db.execute(select(User).where(User.email == payload.email.lower().strip()))
+    ).scalar_one_or_none()
+    if not user or not user.is_active or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = create_access_token(subject=user.email, role=user.role)
+    db.add(AuditLog(actor=user.email, action="user_login", resource_type="user", resource_id=user.email))
+    await db.commit()
+    return {"access_token": token, "token_type": "bearer", "user": {"email": user.email, "full_name": user.full_name, "role": user.role}}
+
+
+@app.get("/api/auth/me")
+async def auth_me(claims: dict = Depends(get_current_user_claims)):
+    return claims
 
 
 @app.get("/api/dashboard/metrics")
@@ -312,11 +370,12 @@ async def list_documents(collection: Optional[str] = None, db: AsyncSession = De
     ]
 
 
-@app.post("/api/documents/upload")
+@app.post("/api/documents/upload", dependencies=[Depends(enforce_rate_limit)])
 async def upload_document(
     file: UploadFile = File(...),
     collection: str = Form("default"),
     project_id: Optional[str] = Form(None),
+    _claims: dict = Depends(require_roles("admin", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     safe_name = sanitize_filename(file.filename or "document.txt")
@@ -356,6 +415,29 @@ async def search_documents(
     return {"query": query, "results": hits}
 
 
+@app.post("/api/documents/ask", dependencies=[Depends(enforce_rate_limit)])
+async def ask_knowledge_base(
+    payload: RAGQuestionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    return await answer_with_rag(
+        db,
+        question=sanitize_untrusted_text(payload.question, 2000),
+        top_k=payload.top_k,
+        collection=payload.collection,
+    )
+
+
+@app.post("/api/documents/reindex")
+async def reindex_documents(
+    force: bool = False,
+    _claims: dict = Depends(require_roles("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    rebuilt = await rebuild_stale_embeddings(db, force=force)
+    return {"rebuilt_documents": rebuilt, "embedding_model": settings.EMBEDDING_MODEL}
+
+
 @app.delete("/api/documents/{doc_id}")
 async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
     res = await db.execute(delete(Document).where(Document.id == doc_id))
@@ -389,7 +471,11 @@ async def list_memories(
 
 
 @app.post("/api/memory")
-async def create_memory(payload: MemoryCreate, db: AsyncSession = Depends(get_db)):
+async def create_memory(
+    payload: MemoryCreate,
+    _claims: dict = Depends(require_roles("admin", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
     rec = await store_memory(
         db,
         layer=payload.layer,
@@ -397,6 +483,9 @@ async def create_memory(payload: MemoryCreate, db: AsyncSession = Depends(get_db
         category=payload.category,
         source=payload.source,
         task_id=payload.task_id,
+        project_id=payload.project_id,
+        session_id=payload.session_id,
+        ttl_hours=payload.ttl_hours,
     )
     return {"id": rec.id, "layer": rec.layer, "created_at": rec.created_at}
 
@@ -473,7 +562,10 @@ async def list_approvals(status: Optional[str] = None, db: AsyncSession = Depend
 
 @app.post("/api/approvals/{approval_id}/decide")
 async def decide_approval(
-    approval_id: str, payload: ApprovalDecision, db: AsyncSession = Depends(get_db)
+    approval_id: str,
+    payload: ApprovalDecision,
+    claims: dict = Depends(require_roles("admin", "analyst")),
+    db: AsyncSession = Depends(get_db),
 ):
     req = (
         await db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_id))
@@ -488,7 +580,7 @@ async def decide_approval(
     req.resolved_at = datetime.now(timezone.utc)
     db.add(
         AuditLog(
-            actor="human_reviewer",
+            actor=claims.get("sub", "human_reviewer"),
             action=f"approval_{payload.decision}",
             resource_type="approval",
             resource_id=approval_id,
@@ -507,8 +599,12 @@ async def get_mcp_servers():
     return mcp_registry.list_servers()
 
 
-@app.post("/api/mcp/invoke")
-async def invoke_mcp_tool(payload: MCPToolInvoke, db: AsyncSession = Depends(get_db)):
+@app.post("/api/mcp/invoke", dependencies=[Depends(enforce_rate_limit)])
+async def invoke_mcp_tool(
+    payload: MCPToolInvoke,
+    _claims: dict = Depends(require_roles("admin", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
     try:
         return await mcp_registry.invoke_tool(
             db, server_id=payload.server_id, tool_name=payload.tool_name, arguments=payload.arguments
@@ -545,7 +641,7 @@ async def a2a_discover_agents(
     return await a2a_service.get_agent_cards(db)
 
 
-@app.post("/api/a2a/tasks")
+@app.post("/api/a2a/tasks", dependencies=[Depends(enforce_rate_limit)])
 async def a2a_create_task(
     payload: A2ATaskRequest,
     authorization: Optional[str] = Header(default=None),
@@ -566,8 +662,8 @@ async def a2a_create_task(
 
 
 @app.get("/api/a2a/tasks")
-async def a2a_list_tasks():
-    return a2a_service.list_a2a_tasks()
+async def a2a_list_tasks(db: AsyncSession = Depends(get_db)):
+    return await a2a_service.list_a2a_tasks(db)
 
 
 @app.get("/api/integrations")
@@ -590,12 +686,20 @@ async def list_integrations(db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/settings")
-async def get_app_settings():
+async def get_app_settings(db: AsyncSession = Depends(get_db)):
+    row = (
+        await db.execute(select(SystemSetting).where(SystemSetting.key == "runtime"))
+    ).scalar_one_or_none()
+    if row and isinstance(row.value_json, dict):
+        for k, v in row.value_json.items():
+            if hasattr(settings, k):
+                setattr(settings, k, v)
     return {
         "app_name": settings.APP_NAME,
         "environment": settings.ENVIRONMENT,
         "default_llm_provider": settings.DEFAULT_LLM_PROVIDER,
         "default_llm_model": settings.DEFAULT_LLM_MODEL,
+        "embedding_model": settings.EMBEDDING_MODEL,
         "max_workflow_retries": settings.MAX_WORKFLOW_RETRIES,
         "agent_execution_timeout_seconds": settings.AGENT_EXECUTION_TIMEOUT_SECONDS,
         "require_approval_for_reports": settings.REQUIRE_APPROVAL_FOR_REPORTS,
@@ -604,7 +708,11 @@ async def get_app_settings():
 
 
 @app.patch("/api/settings")
-async def update_app_settings(payload: SettingsUpdate):
+async def update_app_settings(
+    payload: SettingsUpdate,
+    _claims: dict = Depends(require_roles("admin", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
     if payload.default_llm_provider is not None:
         settings.DEFAULT_LLM_PROVIDER = payload.default_llm_provider
     if payload.default_llm_model is not None:
@@ -613,4 +721,19 @@ async def update_app_settings(payload: SettingsUpdate):
         settings.MAX_WORKFLOW_RETRIES = payload.max_workflow_retries
     if payload.require_approval_for_reports is not None:
         settings.REQUIRE_APPROVAL_FOR_REPORTS = payload.require_approval_for_reports
-    return await get_app_settings()
+
+    runtime_vals = {
+        "DEFAULT_LLM_PROVIDER": settings.DEFAULT_LLM_PROVIDER,
+        "DEFAULT_LLM_MODEL": settings.DEFAULT_LLM_MODEL,
+        "MAX_WORKFLOW_RETRIES": settings.MAX_WORKFLOW_RETRIES,
+        "REQUIRE_APPROVAL_FOR_REPORTS": settings.REQUIRE_APPROVAL_FOR_REPORTS,
+    }
+    row = (
+        await db.execute(select(SystemSetting).where(SystemSetting.key == "runtime"))
+    ).scalar_one_or_none()
+    if row:
+        row.value_json = runtime_vals
+    else:
+        db.add(SystemSetting(key="runtime", value_json=runtime_vals))
+    await db.commit()
+    return await get_app_settings(db)

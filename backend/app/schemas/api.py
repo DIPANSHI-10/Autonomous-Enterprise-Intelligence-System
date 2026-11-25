@@ -90,6 +90,26 @@ class MemoryCreate(BaseModel):
     content: str = Field(..., min_length=2)
     source: str = "user"
     task_id: Optional[str] = None
+    project_id: Optional[str] = None
+    session_id: Optional[str] = None
+    ttl_hours: Optional[int] = Field(default=None, ge=1, le=8760)
+
+
+class UserRegister(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+    full_name: str = Field(..., min_length=2, max_length=120)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class RAGQuestionRequest(BaseModel):
+    question: str = Field(..., min_length=3, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    collection: Optional[str] = None
 
 
 class MCPToolInvoke(BaseModel):

@@ -21,10 +21,15 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./enterprise_intelligence.db"
 
-    # Vector Store
+    # Vector Store & RAG
     VECTOR_BACKEND: str = "local_hybrid"
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""
+    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    CHUNK_SIZE: int = 750
+    CHUNK_OVERLAP: int = 120
+    HYBRID_SEMANTIC_WEIGHT: float = 0.65
+    HYBRID_BM25_WEIGHT: float = 0.35
 
     # Redis
     REDIS_URL: str = ""
@@ -48,6 +53,10 @@ class Settings(BaseSettings):
 
     # Security & Limits
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    AUTH_REQUIRED: bool = False
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 720
+    A2A_SHARED_SECRET: str = ""
     MAX_UPLOAD_SIZE_MB: int = 20
     MAX_WORKFLOW_RETRIES: int = 2
     AGENT_EXECUTION_TIMEOUT_SECONDS: int = 120

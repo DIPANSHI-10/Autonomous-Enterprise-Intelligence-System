@@ -1,7 +1,8 @@
-"""Model Context Protocol (MCP) server & tool registry with safe validated execution."""
+"""Model Context Protocol (MCP) server & tool registry with Pydantic input validation."""
 
 import time
 from typing import Any, Optional
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import sanitize_untrusted_text
@@ -9,8 +10,36 @@ from app.models.domain import ToolExecution
 from app.services.rag_service import hybrid_search
 
 
+class WebSearchArgs(BaseModel):
+    query: str = Field(min_length=1, max_length=400)
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+class FetchUrlArgs(BaseModel):
+    url: str = Field(min_length=8, max_length=1000)
+
+
+class KBRetrieveArgs(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    top_k: int = Field(default=5, ge=1, le=20)
+    collection: Optional[str] = None
+
+
+class ComputeStatsArgs(BaseModel):
+    values: list[float] = Field(min_length=1, max_length=5000)
+    label: str = Field(default="series", max_length=120)
+
+
+TOOL_SCHEMAS = {
+    "web_search": WebSearchArgs,
+    "fetch_url_summary": FetchUrlArgs,
+    "knowledge_base_retrieve": KBRetrieveArgs,
+    "compute_statistics": ComputeStatsArgs,
+}
+
+
 class MCPServerRegistry:
-    """Manages MCP servers, tool permissions, and safe validated execution."""
+    """Manages MCP servers, tool permissions, Pydantic validation, and safe execution."""
 
     def __init__(self) -> None:
         self.servers: dict[str, dict[str, Any]] = {
@@ -18,7 +47,7 @@ class MCPServerRegistry:
                 "id": "mcp-research",
                 "name": "Enterprise Web Research MCP",
                 "status": "connected",
-                "transport": "stdio/sdk",
+                "transport": "in-process/mcp-schema",
                 "permissions": ["read:web", "read:public_docs"],
                 "tools": [
                     {
@@ -37,12 +66,12 @@ class MCPServerRegistry:
                 "id": "mcp-knowledge",
                 "name": "Knowledge Base & RAG MCP",
                 "status": "connected",
-                "transport": "in-process/sdk",
+                "transport": "in-process/mcp-schema",
                 "permissions": ["read:documents", "read:vectors"],
                 "tools": [
                     {
                         "name": "knowledge_base_retrieve",
-                        "description": "Hybrid semantic + keyword retrieval from indexed enterprise documents.",
+                        "description": "Hybrid semantic + BM25 retrieval from indexed enterprise documents.",
                         "parameters": {"query": "string", "top_k": "integer"},
                     }
                 ],
@@ -51,12 +80,12 @@ class MCPServerRegistry:
                 "id": "mcp-analytics",
                 "name": "Quantitative Analysis MCP",
                 "status": "connected",
-                "transport": "in-process/sdk",
+                "transport": "in-process/mcp-schema",
                 "permissions": ["compute:python_math"],
                 "tools": [
                     {
                         "name": "compute_statistics",
-                        "description": "Compute mean, median, std, min, max, and growth metrics over numeric arrays.",
+                        "description": "Compute mean, median, std, min, max over numeric arrays.",
                         "parameters": {"values": "array[number]", "label": "string"},
                     }
                 ],
@@ -84,47 +113,52 @@ class MCPServerRegistry:
         if tool_name not in allowed_tools:
             raise PermissionError(f"Tool '{tool_name}' is not permitted on server '{server_id}'")
 
+        schema_cls = TOOL_SCHEMAS.get(tool_name)
+        if schema_cls:
+            try:
+                validated = schema_cls.model_validate(arguments)
+            except ValidationError as exc:
+                raise ValueError(f"Invalid arguments for '{tool_name}': {exc}") from exc
+        else:
+            validated = None
+
         status_val = "success"
         err_msg = None
         result: dict[str, Any] = {}
 
         try:
-            if tool_name == "knowledge_base_retrieve":
-                query = sanitize_untrusted_text(str(arguments.get("query", "")), 500)
-                top_k = min(10, max(1, int(arguments.get("top_k", 5))))
-                hits = await hybrid_search(db, query=query, top_k=top_k)
+            if tool_name == "knowledge_base_retrieve" and isinstance(validated, KBRetrieveArgs):
+                query = sanitize_untrusted_text(validated.query, 500)
+                hits = await hybrid_search(
+                    db, query=query, top_k=validated.top_k, collection=validated.collection
+                )
                 result = {"matches": hits, "count": len(hits)}
-            elif tool_name == "compute_statistics":
+            elif tool_name == "compute_statistics" and isinstance(validated, ComputeStatsArgs):
                 import numpy as np
 
-                raw_vals = arguments.get("values", [])
-                vals = [float(x) for x in raw_vals if isinstance(x, (int, float))]
-                if not vals:
-                    result = {"error": "No numeric values provided"}
-                else:
-                    arr = np.array(vals, dtype=float)
-                    result = {
-                        "label": str(arguments.get("label", "series")),
-                        "count": len(vals),
-                        "mean": round(float(np.mean(arr)), 4),
-                        "median": round(float(np.median(arr)), 4),
-                        "std_dev": round(float(np.std(arr)), 4),
-                        "min": round(float(np.min(arr)), 4),
-                        "max": round(float(np.max(arr)), 4),
-                    }
-            elif tool_name == "web_search":
+                arr = np.array(validated.values, dtype=float)
+                result = {
+                    "label": validated.label,
+                    "count": len(validated.values),
+                    "mean": round(float(np.mean(arr)), 4),
+                    "median": round(float(np.median(arr)), 4),
+                    "std_dev": round(float(np.std(arr)), 4),
+                    "min": round(float(np.min(arr)), 4),
+                    "max": round(float(np.max(arr)), 4),
+                }
+            elif tool_name == "web_search" and isinstance(validated, WebSearchArgs):
                 from app.agents.tools import perform_web_search
 
-                q = sanitize_untrusted_text(str(arguments.get("query", "")), 400)
-                max_r = min(10, max(1, int(arguments.get("max_results", 5))))
-                hits = await perform_web_search(q, max_results=max_r)
+                q = sanitize_untrusted_text(validated.query, 400)
+                hits = await perform_web_search(q, max_results=validated.max_results)
                 result = {"results": hits, "count": len(hits)}
-            elif tool_name == "fetch_url_summary":
+            elif tool_name == "fetch_url_summary" and isinstance(validated, FetchUrlArgs):
                 from app.agents.tools import fetch_and_clean_url
 
-                url = str(arguments.get("url", "")).strip()
-                text = await fetch_and_clean_url(url)
-                result = {"url": url, "excerpt": text[:1500]}
+                if not validated.url.startswith(("http://", "https://")):
+                    raise ValueError("URL must start with http:// or https://")
+                text = await fetch_and_clean_url(validated.url)
+                result = {"url": validated.url, "excerpt": text[:1500]}
         except Exception as exc:
             status_val = "error"
             err_msg = str(exc)

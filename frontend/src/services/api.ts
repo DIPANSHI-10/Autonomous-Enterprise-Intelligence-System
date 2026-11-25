@@ -98,6 +98,25 @@ export const api = {
         relevance_score: number;
       }>;
     }>(`/documents/search?query=${encodeURIComponent(query)}`),
+  askKnowledgeBase: (question: string, top_k = 5, collection?: string) =>
+    request<{
+      question: string;
+      answer: string;
+      sufficient_evidence: boolean;
+      llm_configured: boolean;
+      citations: Array<{ document_id: string; filename: string; chunk_index: number; relevance_score: number }>;
+      results: Array<{
+        chunk_id: string;
+        document_id: string;
+        filename: string;
+        collection: string;
+        content: string;
+        relevance_score: number;
+      }>;
+    }>("/documents/ask", {
+      method: "POST",
+      body: JSON.stringify({ question, top_k, collection: collection || null }),
+    }),
   deleteDocument: (id: string) => request(`/documents/${id}`, { method: "DELETE" }),
 
   // Memory
