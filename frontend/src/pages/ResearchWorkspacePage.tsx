@@ -1,6 +1,7 @@
-import { CheckCircle2, Clock, SearchCode } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Download, SearchCode } from "lucide-react";
 import { CommandInput } from "../components/common/CommandInput";
 import { GlassCard } from "../components/common/GlassCard";
+import { api } from "../services/api";
 import { useAppStore } from "../store/useAppStore";
 
 export function ResearchWorkspacePage() {
@@ -8,6 +9,7 @@ export function ResearchWorkspacePage() {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const setActiveTaskId = useAppStore((s) => s.setActiveTaskId);
   const activeExecutions = useAppStore((s) => s.activeExecutions);
+  const activeReport = useAppStore((s) => s.activeReport);
 
   const selected = tasks.find((t) => t.id === activeTaskId) || tasks[0];
 
@@ -94,9 +96,32 @@ export function ResearchWorkspacePage() {
               </div>
 
               {selected.result_summary && (
-                <div className="p-3 rounded-xl bg-[#42D6A4]/10 border border-[#42D6A4]/30 text-xs text-slate-200">
-                  <p className="font-semibold text-[#42D6A4] mb-1">Result Summary</p>
+                <div className="p-3 rounded-xl bg-[#42D6A4]/10 border border-[#42D6A4]/30 text-xs text-slate-200 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-semibold text-[#42D6A4]">Result Summary</p>
+                    {selected.status === "completed" &&
+                      activeReport?.task_id === selected.id &&
+                      activeReport.has_pdf && (
+                        <a
+                          href={api.getReportPdfUrl(activeReport.id)}
+                          download
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#36D9F5] text-[#050914] font-semibold text-[11px] hover:opacity-90"
+                        >
+                          <Download className="w-3.5 h-3.5" /> Download PDF
+                        </a>
+                      )}
+                  </div>
                   <p>{selected.result_summary}</p>
+                </div>
+              )}
+
+              {selected.error_message && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-200 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-rose-300">Execution / Report Notice</p>
+                    <p>{selected.error_message}</p>
+                  </div>
                 </div>
               )}
             </>

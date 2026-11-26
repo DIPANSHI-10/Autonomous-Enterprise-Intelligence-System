@@ -124,6 +124,16 @@ export interface ApprovalItem {
   created_at: string;
 }
 
+export interface TaskReportSummary {
+  id: string;
+  task_id: string;
+  title: string;
+  executive_summary: string;
+  has_pdf: boolean;
+  pdf_url: string;
+  created_at: string;
+}
+
 export interface ReportItem {
   id: string;
   task_id: string;

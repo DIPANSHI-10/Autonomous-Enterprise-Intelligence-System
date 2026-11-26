@@ -229,8 +229,28 @@ async def get_task_detail(task_id: str, db: AsyncSession = Depends(get_db)):
             .order_by(WorkflowEvent.created_at.asc())
         )
     ).scalars().all()
+    report = (
+        await db.execute(
+            select(Report)
+            .where(Report.task_id == task_id)
+            .order_by(Report.created_at.desc())
+        )
+    ).scalars().first()
     return {
         "task": TaskOut.model_validate(task),
+        "report": (
+            {
+                "id": report.id,
+                "task_id": report.task_id,
+                "title": report.title,
+                "executive_summary": report.executive_summary,
+                "has_pdf": bool(report.pdf_path and Path(report.pdf_path).exists()),
+                "pdf_url": f"/api/reports/{report.id}/pdf",
+                "created_at": report.created_at,
+            }
+            if report
+            else None
+        ),
         "executions": [
             {
                 "id": e.id,
@@ -283,9 +303,15 @@ async def retry_task(task_id: str, db: AsyncSession = Depends(get_db)):
     task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    attached_docs = (task.workflow_state or {}).get("attached_document_ids", [])
     task.status = "queued"
     task.progress = 0.0
+    task.current_agent = None
+    task.plan = []
+    task.result_summary = None
     task.error_message = None
+    task.completed_at = None
+    task.workflow_state = {"attached_document_ids": attached_docs}
     await db.commit()
     asyncio.create_task(run_task_workflow(task.id))
     return {"status": "queued", "task_id": task_id}

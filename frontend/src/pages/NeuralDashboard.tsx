@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Cpu,
   Database,
+  Download,
   Server,
   X,
 } from "lucide-react";
@@ -23,6 +24,7 @@ export function NeuralDashboard() {
   const agents = useAppStore((s) => s.agents);
   const tasks = useAppStore((s) => s.tasks);
   const activeExecutions = useAppStore((s) => s.activeExecutions);
+  const activeReport = useAppStore((s) => s.activeReport);
   const approvals = useAppStore((s) => s.approvals);
   const setActivePage = useAppStore((s) => s.setActivePage);
 
@@ -183,15 +185,28 @@ export function NeuralDashboard() {
         {/* CENTER 3D NEURAL INTELLIGENCE GLOBE + COMMAND INPUT */}
         <div className="xl:col-span-6 flex flex-col gap-4">
           <GlassCard className="relative h-[430px] overflow-hidden border-[#36D9F5]/25">
-            <div className="absolute top-3 left-4 z-10 pointer-events-none">
-              <p className="text-[11px] font-mono uppercase tracking-widest text-[#36D9F5]">
-                Neural Intelligence Core
-              </p>
-              <p className="text-xs text-slate-400">
-                {activeTask
-                  ? `Active Objective: ${activeTask.objective.slice(0, 68)}... (${Math.round(activeTask.progress)}%)`
-                  : "System Idle · Submit an enterprise objective below"}
-              </p>
+            <div className="absolute top-3 left-4 right-4 z-10 flex items-start justify-between gap-2 pointer-events-none">
+              <div>
+                <p className="text-[11px] font-mono uppercase tracking-widest text-[#36D9F5]">
+                  Neural Intelligence Core
+                </p>
+                <p className="text-xs text-slate-400">
+                  {activeTask
+                    ? `Active Objective: ${activeTask.objective.slice(0, 68)}... (${Math.round(activeTask.progress)}%)`
+                    : "System Idle · Submit an enterprise objective below"}
+                </p>
+              </div>
+              {activeTask?.status === "completed" &&
+                activeReport?.task_id === activeTask.id &&
+                activeReport.has_pdf && (
+                  <a
+                    href={api.getReportPdfUrl(activeReport.id)}
+                    download
+                    className="pointer-events-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#42D6A4] text-[#050914] text-[11px] font-semibold shadow hover:opacity-90 shrink-0"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Download PDF
+                  </a>
+                )}
             </div>
 
             <NeuralGlobe

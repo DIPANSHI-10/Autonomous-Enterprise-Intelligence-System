@@ -7,6 +7,7 @@ import type {
   DashboardMetrics,
   PageId,
   TaskItem,
+  TaskReportSummary,
   WorkflowEventItem,
 } from "../types";
 
@@ -32,6 +33,7 @@ interface AppState {
   setActiveTaskId: (id: string | null) => void;
   activeExecutions: AgentExecutionItem[];
   activeEvents: WorkflowEventItem[];
+  activeReport: TaskReportSummary | null;
   approvals: ApprovalItem[];
   liveEvents: WorkflowEventItem[];
   toasts: ToastMessage[];
@@ -65,13 +67,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   tasks: [],
   activeTaskId: null,
   setActiveTaskId: (id) => {
-    set({ activeTaskId: id });
+    set({ activeTaskId: id, activeExecutions: [], activeEvents: [], activeReport: null });
     if (id) {
       void get().refreshTaskDetail(id);
     }
   },
   activeExecutions: [],
   activeEvents: [],
+  activeReport: null,
   approvals: [],
   liveEvents: [],
   toasts: [],
@@ -107,9 +110,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshTaskDetail: async (taskId) => {
     try {
       const detail = await api.getTaskDetail(taskId);
+      if (get().activeTaskId && get().activeTaskId !== taskId) {
+        return;
+      }
       set({
         activeExecutions: detail.executions,
         activeEvents: detail.events,
+        activeReport: detail.report ?? null,
       });
     } catch {
       // ignore
@@ -121,6 +128,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({
       tasks: [task, ...s.tasks],
       activeTaskId: task.id,
+      activeExecutions: [],
+      activeEvents: [],
+      activeReport: null,
     }));
     get().addToast({
       title: "Autonomous Workflow Launched",

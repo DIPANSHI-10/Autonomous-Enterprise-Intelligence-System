@@ -5,6 +5,7 @@ import type {
   DashboardMetrics,
   ReportItem,
   TaskItem,
+  TaskReportSummary,
   WorkflowEventItem,
 } from "../types";
 
@@ -51,9 +52,12 @@ export const api = {
     attached_document_ids?: string[];
   }) => request<TaskItem>("/tasks", { method: "POST", body: JSON.stringify(body) }),
   getTaskDetail: (taskId: string) =>
-    request<{ task: TaskItem; executions: AgentExecutionItem[]; events: WorkflowEventItem[] }>(
-      `/tasks/${taskId}`
-    ),
+    request<{
+      task: TaskItem;
+      report: TaskReportSummary | null;
+      executions: AgentExecutionItem[];
+      events: WorkflowEventItem[];
+    }>(`/tasks/${taskId}`),
   cancelTask: (taskId: string) => request(`/tasks/${taskId}/cancel`, { method: "POST" }),
   retryTask: (taskId: string) => request(`/tasks/${taskId}/retry`, { method: "POST" }),
 

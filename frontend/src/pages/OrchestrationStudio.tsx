@@ -7,7 +7,7 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Pause, Play, RotateCcw, X } from "lucide-react";
+import { Download, Pause, Play, RotateCcw, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { GlassCard } from "../components/common/GlassCard";
 import { AgentNode, type AgentNodeData } from "../components/studio/AgentNode";
@@ -26,6 +26,7 @@ export function OrchestrationStudio() {
   const setActiveTaskId = useAppStore((s) => s.setActiveTaskId);
   const activeExecutions = useAppStore((s) => s.activeExecutions);
   const activeEvents = useAppStore((s) => s.activeEvents);
+  const activeReport = useAppStore((s) => s.activeReport);
   const refreshAll = useAppStore((s) => s.refreshAll);
   const addToast = useAppStore((s) => s.addToast);
 
@@ -180,6 +181,18 @@ export function OrchestrationStudio() {
           >
             <RotateCcw className="w-3.5 h-3.5" /> Retry Workflow
           </button>
+
+          {activeTask?.status === "completed" &&
+            activeReport?.task_id === activeTask.id &&
+            activeReport.has_pdf && (
+              <a
+                href={api.getReportPdfUrl(activeReport.id)}
+                download
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#42D6A4] text-[#050914] text-xs font-semibold hover:opacity-90"
+              >
+                <Download className="w-3.5 h-3.5" /> Download PDF
+              </a>
+            )}
         </div>
       </div>
 

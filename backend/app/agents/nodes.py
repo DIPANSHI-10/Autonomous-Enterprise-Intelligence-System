@@ -600,7 +600,7 @@ async def report_node(state: WorkflowState) -> WorkflowState:
         task_id,
         "report",
         "Report Agent",
-        "Compiling final intelligence report, citations, and PDF artifact",
+        "Compiling structured intelligence report and PDF artifact",
         95.0,
         {"objective": objective},
     )
@@ -612,34 +612,108 @@ async def report_node(state: WorkflowState) -> WorkflowState:
     insights = state.get("analysis_insights", [])
     recs = state.get("strategic_recommendations", [])
     verified = state.get("verified_claims", [])
+    unverified = state.get("unverified_claims", [])
+    ver_status = state.get("verification_status", "verified")
 
-    title = f"Enterprise Intelligence Report: {objective[:75]}"
-    exec_summary = (
-        f"Autonomous multi-agent investigation completed for: '{objective}'. "
-        f"Analyzed {len(entities)} structured entities across {len(sources)} external sources "
-        f"and {len(rag_refs)} Knowledge Base references. Verification status: {state.get('verification_status', 'verified')} "
-        f"({len(verified)} verified claims)."
+    clean_obj = " ".join(objective.split())
+    title = clean_obj[:85] + ("..." if len(clean_obj) > 85 else "")
+
+    # Grounded Executive Summary (LLM-synthesized when configured, otherwise factual task summary)
+    llm_summary_resp = await llm_service.generate(
+        system_prompt=(
+            "You are the Report Agent of Autonomous Enterprise Intelligence System. "
+            "Write a concise, executive-ready summary (3-4 sentences) strictly grounded in the provided "
+            "verified findings, quantitative insights, and recommendations. Never invent numbers or URLs."
+        ),
+        user_prompt=json.dumps(
+            {
+                "objective": objective,
+                "entities_count": len(entities),
+                "sources_count": len(sources),
+                "rag_refs_count": len(rag_refs),
+                "verification_status": ver_status,
+                "insights": insights[:5],
+                "recommendations": recs[:5],
+            }
+        ),
+        model=model_name,
+        trace_name="report_executive_summary",
     )
 
+    if llm_summary_resp.configured and llm_summary_resp.content:
+        exec_summary = llm_summary_resp.content.strip()
+    else:
+        exec_summary = (
+            f"Intelligence investigation for '{clean_obj}' evaluated {len(entities)} extracted subjects "
+            f"across {len(sources)} external web source(s) and {len(rag_refs)} Knowledge Base document excerpt(s). "
+            f"Verification status: {ver_status} ({len(verified)} source-verified, {len(unverified)} flagged)."
+        )
+
     citations = [
-        {"title": s.get("title", "Source"), "url": s.get("url", ""), "type": s.get("source", "web")}
+        {"title": s.get("title", "Web Source"), "url": s.get("url", ""), "type": s.get("source", "web")}
         for s in sources
+        if s.get("url")
     ] + [
-        {"title": r.get("filename", "Document"), "url": f"kb://{r.get('document_id')}", "type": "rag"}
+        {"title": r.get("filename", "Knowledge Base Document"), "url": f"kb://{r.get('document_id')}", "type": "rag"}
         for r in rag_refs
+        if r.get("document_id")
     ]
 
-    md_sections = [
-        f"# {title}",
-        f"## Executive Summary\n{exec_summary}",
-        "## Quantitative Analysis\n" + "\n".join(f"- {i}" for i in insights),
-        "## Strategic Recommendations\n"
-        + "\n".join(f"- **{r['title']}** ({r['priority']}): {r['rationale']}" for r in recs),
-        "## Source Citations\n"
-        + "\n".join(f"- [{c['title']}]({c['url']}) ({c['type']})" for c in citations),
+    md_sections: list[str] = []
+
+    # 1. Key Findings & Extracted Intelligence
+    if entities:
+        entity_lines = []
+        for ent in entities[:8]:
+            name = ent.get("name", "Subject")
+            positioning = ent.get("market_positioning", "").strip()
+            techs = ", ".join(ent.get("technologies", [])[:4])
+            line = f"- **{name}**"
+            if positioning:
+                line += f": {positioning}"
+            if techs:
+                line += f" (Technologies: {techs})"
+            entity_lines.append(line)
+        md_sections.append("## Key Research Findings\n" + "\n".join(entity_lines))
+    else:
+        md_sections.append(
+            "## Key Research Findings\nNo structured entities were extracted from external web or Knowledge Base sources for this objective."
+        )
+
+    # 2. Quantitative Analysis (only factual computed metrics)
+    if insights:
+        md_sections.append("## Quantitative Analysis\n" + "\n".join(f"- {i}" for i in insights))
+
+    # 3. Verification & Evidence Confidence
+    ver_lines = [
+        f"- Overall verification status: **{ver_status}**",
+        f"- Source-verified records: {len(verified)}",
+        f"- Unverified or missing-source flags: {len(unverified)}",
     ]
+    if unverified:
+        ver_lines.extend(f"- Flagged: {u}" for u in unverified[:5])
+    md_sections.append("## Verification & Confidence Summary\n" + "\n".join(ver_lines))
+
+    # 4. Strategic Recommendations & Conclusions
+    if recs:
+        rec_lines = [
+            f"- **{r.get('title', 'Recommendation')}** ({r.get('priority', 'Info')}): {r.get('rationale', '')}"
+            for r in recs
+        ]
+        md_sections.append("## Strategic Recommendations & Conclusions\n" + "\n".join(rec_lines))
+
+    # 5. Source Citations
+    if citations:
+        cit_lines = [f"- [{c['title']}]({c['url']}) ({c['type']})" for c in citations]
+        md_sections.append("## Source Citations\n" + "\n".join(cit_lines))
+    else:
+        md_sections.append(
+            "## Source Citations\nNo external URLs or Knowledge Base documents were retrieved for citation."
+        )
+
     markdown_body = "\n\n".join(md_sections)
 
+    pdf_error = None
     async with AsyncSessionLocal() as db:
         report = Report(
             task_id=task_id,
@@ -652,8 +726,13 @@ async def report_node(state: WorkflowState) -> WorkflowState:
         )
         db.add(report)
         await db.flush()
-        pdf_path = generate_pdf_report(report.id, title, exec_summary, markdown_body)
-        report.pdf_path = pdf_path
+        try:
+            pdf_path = generate_pdf_report(report.id, title, exec_summary, markdown_body)
+            report.pdf_path = pdf_path
+        except Exception as exc:
+            pdf_error = str(exc)
+            report.pdf_path = None
+            pdf_path = None
 
         task_row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
         if task_row:
@@ -661,6 +740,8 @@ async def report_node(state: WorkflowState) -> WorkflowState:
             task_row.progress = 100.0
             task_row.current_agent = None
             task_row.result_summary = exec_summary
+            if pdf_error:
+                task_row.error_message = f"Report saved, but PDF export failed: {pdf_error}"
             task_row.completed_at = datetime.now(timezone.utc)
 
         await db.commit()
@@ -675,6 +756,7 @@ async def report_node(state: WorkflowState) -> WorkflowState:
             content=exec_summary,
             source="report_agent",
             task_id=task_id,
+            project_id=state.get("project_id"),
         )
 
     elapsed = int((time.perf_counter() - t0) * 1000)
@@ -684,8 +766,8 @@ async def report_node(state: WorkflowState) -> WorkflowState:
         "report",
         "Report Agent",
         None,
-        {"report_id": report_id, "pdf_path": pdf_path},
-        110,
+        {"report_id": report_id, "pdf_path": pdf_path, "pdf_error": pdf_error},
+        llm_summary_resp.tokens_used,
         elapsed,
         100.0,
         f"Report Agent generated report '{title}' with {len(citations)} citations",
@@ -697,7 +779,7 @@ async def report_node(state: WorkflowState) -> WorkflowState:
         target_agent=None,
         status="completed",
         message="Autonomous multi-agent workflow completed successfully",
-        payload={"report_id": report_id},
+        payload={"report_id": report_id, "has_pdf": bool(pdf_path)},
     )
     return {
         "report_id": report_id,
@@ -706,5 +788,5 @@ async def report_node(state: WorkflowState) -> WorkflowState:
         "report_markdown": markdown_body,
         "pdf_path": pdf_path,
         "current_step": "completed",
-        "total_tokens": state.get("total_tokens", 0) + 110,
+        "total_tokens": state.get("total_tokens", 0) + llm_summary_resp.tokens_used,
     }

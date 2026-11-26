@@ -1,5 +1,6 @@
-"""LangGraph StateGraph compilation, checkpointing, conditional routing, and execution runner."""
+"""LangGraph StateGraph compilation, checkpointing, conditional routing, and isolated task execution."""
 
+import uuid
 from datetime import datetime, timezone
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -69,14 +70,20 @@ workflow_graph = build_workflow_graph()
 
 
 async def run_task_workflow(task_id: str) -> None:
-    """Execute the LangGraph workflow for a persisted Task and stream events."""
+    """Execute the LangGraph workflow for a persisted Task with isolated per-run state."""
     settings = get_settings()
+    run_thread_id = f"{task_id}:{uuid.uuid4().hex[:8]}"
+
     async with AsyncSessionLocal() as db:
         task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
         if not task:
             return
+        attached_docs = list((task.workflow_state or {}).get("attached_document_ids", []))
         task.started_at = datetime.now(timezone.utc)
         task.status = "running"
+        task.progress = 0.0
+        task.error_message = None
+        task.result_summary = None
         await db.commit()
 
         initial_state: WorkflowState = {
@@ -86,20 +93,42 @@ async def run_task_workflow(task_id: str) -> None:
             "research_depth": task.research_depth,
             "priority": task.priority,
             "execution_mode": task.execution_mode,
-            "attached_document_ids": (task.workflow_state or {}).get("attached_document_ids", []),
+            "attached_document_ids": attached_docs,
+            "plan": [],
+            "current_step": "supervisor",
+            "research_sources": [],
+            "rag_references": [],
+            "extracted_entities": [],
+            "analysis_metrics": {},
+            "chart_datasets": [],
+            "analysis_insights": [],
+            "verification_status": "pending",
+            "verified_claims": [],
+            "unverified_claims": [],
+            "strategic_recommendations": [],
+            "report_id": None,
+            "report_title": "",
+            "executive_summary": "",
+            "report_markdown": "",
+            "pdf_path": None,
+            "approval_required": False,
+            "approval_status": "none",
+            "approval_id": None,
             "retry_count": 0,
             "max_retries": settings.MAX_WORKFLOW_RETRIES,
             "total_tokens": 0,
             "errors": [],
         }
 
-    config = {"configurable": {"thread_id": task_id}}
+    config = {"configurable": {"thread_id": run_thread_id}}
     try:
         final_state = await workflow_graph.ainvoke(initial_state, config=config)
+        persisted = dict(final_state)
+        persisted["_thread_id"] = run_thread_id
         async with AsyncSessionLocal() as db:
             task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
             if task:
-                task.workflow_state = dict(final_state)
+                task.workflow_state = persisted
                 await db.commit()
     except Exception as exc:
         logger.exception("Workflow execution failed for task %s: %s", task_id, exc)
@@ -122,7 +151,6 @@ async def run_task_workflow(task_id: str) -> None:
 
 async def resume_after_approval(task_id: str, approved: bool) -> None:
     """Resume or reject a paused workflow after Human-in-the-Loop decision."""
-    config = {"configurable": {"thread_id": task_id}}
     async with AsyncSessionLocal() as db:
         task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
         if not task:
@@ -145,11 +173,28 @@ async def resume_after_approval(task_id: str, approved: bool) -> None:
 
     saved_state["approval_status"] = "approved"
     saved_state["approval_required"] = False
-    # Continue directly into report_node using persisted state
-    result_state = await report_node(saved_state)
-    saved_state.update(result_state)
-    async with AsyncSessionLocal() as db:
-        task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
-        if task:
-            task.workflow_state = saved_state
-            await db.commit()
+    try:
+        result_state = await report_node(saved_state)
+        saved_state.update(result_state)
+        async with AsyncSessionLocal() as db:
+            task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+            if task:
+                task.workflow_state = saved_state
+                await db.commit()
+    except Exception as exc:
+        logger.exception("Post-approval report generation failed for task %s: %s", task_id, exc)
+        async with AsyncSessionLocal() as db:
+            task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+            if task:
+                task.status = "failed"
+                task.error_message = f"Report generation failed after approval: {exc}"
+                task.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+        await event_bus.publish(
+            {
+                "task_id": task_id,
+                "event_type": "task_failed",
+                "status": "failed",
+                "message": f"Report generation failed after approval: {exc}",
+            }
+        )
